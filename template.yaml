@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DMS task stop/resume around MongoDB maintenance (EventBridge + Lambda). Single-region stack — deploy in the same region as DMS (default target us-east-1).
+
+Parameters:
+  ReplicationInstanceArns:
+    Type: String
+    Description: Comma-separated replication instance ARNs whose tasks are managed (or use SSM / task list params).
+    Default: ''
+  TaskArnsSsmParameter:
+    Type: String
+    Description: Optional SSM parameter name holding JSON array or comma-separated task ARNs (overrides instance discovery if set).
+    Default: ''
+  BatchSize:
+    Type: Number
+    Default: 12
+  InterBatchDelaySec:
+    Type: Number
+    Default: 90
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 900
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        BATCH_SIZE: !Ref BatchSize
+        INTER_BATCH_DELAY_SEC: !Ref InterBatchDelaySec
+        METRICS_NAMESPACE: DMS/MaintenanceOrchestrator
+        REQUIRE_CDC: 'true'
+        DMS_REPLICATION_INSTANCE_ARNS: !Ref ReplicationInstanceArns
+        DMS_TASK_ARNS_SSM_PARAMETER: !Ref TaskArnsSsmParameter
+
+Resources:
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DmsMaintenanceOrchestration
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DmsTasks
+                Effect: Allow
+                Action:
+                  - dms:ListReplicationTasks
+                  - dms:DescribeReplicationTasks
+                  - dms:StopReplicationTask
+                  - dms:StartReplicationTask
+                Resource: '*'
+              - Sid: SsmReadTaskList
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  DmsMaintenanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-dms-maintenance'
+      CodeUri: ./
+      Handler: lambda_function.handler
+      Role: !GetAtt OrchestratorRole.Arn
+      Events:
+        SundayStopIST:
+          Type: Schedule
+          Properties:
+            # 21:55 IST = 16:25 UTC (India Standard Time, no DST)
+            Schedule: cron(25 16 ? * SUN *)
+            Name: !Sub '${AWS::StackName}-stop-sunday-ist'
+            Description: Stop DMS tasks before MongoDB maintenance (~9:55 PM IST)
+            Enabled: true
+            Input: '{"action":"stop"}'
+        SundayResumeIST:
+          Type: Schedule
+          Properties:
+            # 23:05 IST = 17:35 UTC
+            Schedule: cron(35 17 ? * SUN *)
+            Name: !Sub '${AWS::StackName}-resume-sunday-ist'
+            Description: Resume DMS tasks after maintenance (~11:05 PM IST)
+            Enabled: true
+            Input: '{"action":"resume"}'
+
+  MaintenanceLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-lambda-errors'
+      AlarmDescription: DMS maintenance Lambda failed (check Logs; partial task failures also raise)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DmsMaintenanceFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  FunctionArn:
+    Value: !GetAtt DmsMaintenanceFunction.Arn
+  FunctionName:
+    Value: !Ref DmsMaintenanceFunction

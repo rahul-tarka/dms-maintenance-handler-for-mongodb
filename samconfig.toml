@@ -1,0 +1,16 @@
+# SAM CLI defaults — single region us-east-1. Change stack_name if needed.
+
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name = "dms-mongo-maintenance"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
