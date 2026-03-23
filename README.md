@@ -2,7 +2,7 @@
 
 Production automation: EventBridge + Lambda stop all targeted DMS tasks before MongoDB maintenance, then resume with **`resume-processing`** only (checkpoint-based CDC), batched for scale.
 
-**Region:** Ye stack **ek hi AWS region** mein deploy karo — default / recommended **`us-east-1`**. Lambda, EventBridge rules, DMS API calls, aur SSM parameter sab **usi region** mein hone chahiye jahan replication tasks hain.
+**Region:** Deploy this stack in **a single AWS region** — default / recommended **`us-east-1`**. The Lambda, EventBridge rules, DMS API calls, and any SSM parameter you use must live in the **same region** as your replication tasks and replication instance.
 
 ---
 
